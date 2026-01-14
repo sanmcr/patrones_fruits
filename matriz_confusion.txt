@@ -1,0 +1,20 @@
+=== MATRIZ DE CONFUSION ===
+(filas = real, columnas = predicha)
+
+                         fresh_peaches_done fresh_pomegranates_done fresh_strawberries_done rotten_peaches_done rotten_pomegranates_done rotten_strawberries_done
+fresh_peaches_done          16     0     0     8     1     0
+fresh_pomegranates_done      2    23     0     5     1     0
+fresh_strawberries_done      0     0    15     0     0    10
+rotten_peaches_done          2     0     0    25     6     2
+rotten_pomegranates_done     2     1     0     5    15     2
+rotten_strawberries_done     0     0     1     0     1    23
+
+Accuracy global: 0.7048
+
+Soporte por clase:
+- fresh_peaches_done: 25
+- fresh_pomegranates_done: 31
+- fresh_strawberries_done: 25
+- rotten_peaches_done: 35
+- rotten_pomegranates_done: 25
+- rotten_strawberries_done: 25
