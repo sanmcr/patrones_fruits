@@ -1,13 +1,10 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import json
 from pathlib import Path
 from collections import Counter
 
 import numpy as np
 import tensorflow as tf
-
+import random
 
 # ----------------------------
 # Configuración
@@ -24,6 +21,10 @@ EPOCHS = 25
 SEED = 42
 AUTOTUNE = tf.data.AUTOTUNE
 
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
 
 def read_list(txt_path: Path):
     """
@@ -61,7 +62,6 @@ def load_example(path, label):
 
 
 def augment(img, label):
-    # Augmentations suaves para no destrozar el dataset
     img = tf.image.random_flip_left_right(img)
     img = tf.image.random_brightness(img, max_delta=0.15)
     img = tf.image.random_contrast(img, lower=0.85, upper=1.15)
