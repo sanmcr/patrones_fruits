@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+from collections import Counter
 
 import numpy as np
 import tensorflow as tf
@@ -14,116 +15,82 @@ import tensorflow as tf
 TRAIN_TXT = Path("train.txt")
 VAL_TXT = Path("validation.txt")
 
-MODEL_OUT = Path("modelo_frutas.keras")     # formato recomendado Keras
+MODEL_OUT = Path("modelo_frutas.keras")
 LABEL_MAP_OUT = Path("label_map.json")
 
-IMG_SIZE = (160, 160)      # tamaño moderado para ir rápido y no inflar el modelo
+IMG_SIZE = (224, 224)      # subimos resolución para captar mejor detalles (fresh vs rotten)
 BATCH_SIZE = 32
-EPOCHS = 15
+EPOCHS = 25
 SEED = 42
 AUTOTUNE = tf.data.AUTOTUNE
 
 
-def read_txt_list(txt_path: Path):
+def read_list(txt_path: Path):
     """
-    Lee un fichero tipo:
-        ruta etiqueta
-    Devuelve:
-        paths: lista[str]
-        labels: lista[str]
+    Lee un fichero .txt donde cada línea es:
+        ruta/a/imagen.jpg etiqueta
+    Devuelve: (paths, labels) como listas de strings.
     """
-    if not txt_path.exists():
-        raise FileNotFoundError(f"No existe: {txt_path.resolve()}")
-
     paths, labels = [], []
     with txt_path.open("r", encoding="utf-8") as f:
-        for i, line in enumerate(f, start=1):
+        for line in f:
             line = line.strip()
             if not line:
                 continue
             parts = line.split()
-            if len(parts) != 2:
-                raise ValueError(
-                    f"Línea {i} en {txt_path} no tiene formato 'ruta etiqueta':\n{line}"
-                )
-            p, lab = parts
-            paths.append(p)
-            labels.append(lab)
+            if len(parts) < 2:
+                continue
+            img_path = parts[0]
+            label = parts[1]
+            paths.append(img_path)
+            labels.append(label)
     return paths, labels
 
 
-def build_label_map(all_label_strs):
-    """
-    Crea un mapeo estable: label -> index, index -> label
-    """
-    unique = sorted(set(all_label_strs))
-    label_to_idx = {lab: i for i, lab in enumerate(unique)}
-    idx_to_label = {i: lab for lab, i in label_to_idx.items()}
-    return label_to_idx, idx_to_label
+def decode_img(img_bytes):
+    img = tf.io.decode_jpeg(img_bytes, channels=3)
+    img = tf.image.resize(img, IMG_SIZE)
+    img = tf.cast(img, tf.float32) / 255.0
+    return img
 
 
-def decode_and_resize(path, label_idx):
-    """
-    Carga imagen, decodifica, normaliza y redimensiona.
-    """
+def load_example(path, label):
     img_bytes = tf.io.read_file(path)
-
-    # decode_image soporta jpg/png/etc. y devuelve float/uint8 según convert.
-    img = tf.image.decode_image(img_bytes, channels=3, expand_animations=False)
-    img = tf.image.convert_image_dtype(img, tf.float32)  # [0,1]
-    img = tf.image.resize(img, IMG_SIZE, method="bilinear")
-
-    return img, label_idx
+    img = decode_img(img_bytes)
+    return img, label
 
 
-def make_dataset(paths, label_idxs, training: bool):
-    """
-    Crea tf.data.Dataset eficiente.
-    """
-    ds = tf.data.Dataset.from_tensor_slices((paths, label_idxs))
+def augment(img, label):
+    # Augmentations suaves para no destrozar el dataset
+    img = tf.image.random_flip_left_right(img)
+    img = tf.image.random_brightness(img, max_delta=0.15)
+    img = tf.image.random_contrast(img, lower=0.85, upper=1.15)
+    return img, label
 
+
+def make_dataset(paths, labels, training: bool):
+    ds = tf.data.Dataset.from_tensor_slices((paths, labels))
+    ds = ds.map(load_example, num_parallel_calls=AUTOTUNE)
     if training:
-        ds = ds.shuffle(buffer_size=len(paths), seed=SEED, reshuffle_each_iteration=True)
-
-    ds = ds.map(decode_and_resize, num_parallel_calls=AUTOTUNE)
-
-    if training:
-        # Augmentación básica y barata (sin flip vertical por frutas, queda raro)
-        aug = tf.keras.Sequential([
-            tf.keras.layers.RandomFlip("horizontal", seed=SEED),
-            tf.keras.layers.RandomRotation(0.06, seed=SEED),
-            tf.keras.layers.RandomZoom(0.10, seed=SEED),
-            tf.keras.layers.RandomContrast(0.10, seed=SEED),
-        ])
-
-        ds = ds.map(lambda x, y: (aug(x, training=True), y), num_parallel_calls=AUTOTUNE)
-
+        ds = ds.shuffle(1024, seed=SEED, reshuffle_each_iteration=True)
+        ds = ds.map(augment, num_parallel_calls=AUTOTUNE)
     ds = ds.batch(BATCH_SIZE).prefetch(AUTOTUNE)
     return ds
 
 
 def build_model(num_classes: int):
-    """
-    CNN pequeñita y efectiva para 6 clases.
-    """
-    inputs = tf.keras.Input(shape=(*IMG_SIZE, 3))
-    x = tf.keras.layers.Conv2D(32, 3, padding="same")(inputs)
-    x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.ReLU()(x)
+    inputs = tf.keras.Input(shape=(IMG_SIZE[0], IMG_SIZE[1], 3))
+
+    x = tf.keras.layers.Conv2D(32, 3, activation="relu")(inputs)
+    x = tf.keras.layers.MaxPool2D()(x)
+    x = tf.keras.layers.Conv2D(64, 3, activation="relu")(x)
+    x = tf.keras.layers.MaxPool2D()(x)
+    x = tf.keras.layers.Conv2D(128, 3, activation="relu")(x)
     x = tf.keras.layers.MaxPool2D()(x)
 
-    x = tf.keras.layers.Conv2D(64, 3, padding="same")(x)
-    x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.ReLU()(x)
-    x = tf.keras.layers.MaxPool2D()(x)
-
-    x = tf.keras.layers.Conv2D(128, 3, padding="same")(x)
-    x = tf.keras.layers.BatchNormalization()(x)
-    x = tf.keras.layers.ReLU()(x)
-    x = tf.keras.layers.MaxPool2D()(x)
-
-    x = tf.keras.layers.GlobalAveragePooling2D()(x)
-    x = tf.keras.layers.Dropout(0.25)(x)
+    x = tf.keras.layers.Flatten()(x)
+    x = tf.keras.layers.Dense(256, activation="relu")(x)
+    x = tf.keras.layers.Dropout(0.3)(x)
 
     outputs = tf.keras.layers.Dense(num_classes, activation="softmax")(x)
 
@@ -137,16 +104,20 @@ def build_model(num_classes: int):
 
 
 def main():
-    # Reproducibilidad decente
-    tf.keras.utils.set_random_seed(SEED)
-
     # 1) Leer listas
-    train_paths, train_labels = read_txt_list(TRAIN_TXT)
-    val_paths, val_labels = read_txt_list(VAL_TXT)
+    train_paths, train_labels = read_list(TRAIN_TXT)
+    val_paths, val_labels = read_list(VAL_TXT)
 
-    # 2) Construir label map usando train+val (mismo conjunto de clases)
-    label_to_idx, idx_to_label = build_label_map(train_labels + val_labels)
-    num_classes = len(label_to_idx)
+    if len(train_paths) == 0:
+        raise RuntimeError("train.txt está vacío o no se ha podido leer correctamente.")
+    if len(val_paths) == 0:
+        raise RuntimeError("validation.txt está vacío o no se ha podido leer correctamente.")
+
+    # 2) Crear label_map desde lo visto en train (y val por seguridad)
+    unique_labels = sorted(set(train_labels) | set(val_labels))
+    label_to_idx = {lab: i for i, lab in enumerate(unique_labels)}
+    idx_to_label = {str(i): lab for lab, i in label_to_idx.items()}
+    num_classes = len(unique_labels)
 
     if num_classes < 2:
         raise RuntimeError("Solo se ha detectado 1 clase. Revisa los .txt y las carpetas.")
@@ -159,18 +130,18 @@ def main():
     val_ds = make_dataset(val_paths, val_label_idxs, training=False)
 
     # 4) Modelo
-    model = build_model(num_classes)
+    model = build_model(num_classes=num_classes)
     model.summary()
 
-    # 5) Callbacks: guardar mejor modelo y parar si no mejora
+    # 5) Callbacks
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
-            monitor="val_accuracy",
+            monitor="val_loss",
             patience=4,
             restore_best_weights=True
         ),
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=MODEL_OUT.as_posix(),
+            filepath=str(MODEL_OUT),
             monitor="val_accuracy",
             save_best_only=True
         ),
@@ -183,25 +154,26 @@ def main():
     ]
 
     # 6) Entrenar
+    # 6) Balanceo por pesos de clase (ayuda si hay clases con menos ejemplos)
+    counts = Counter(train_label_idxs.tolist())
+    n_total = len(train_label_idxs)
+    class_weight = {cls: n_total / (num_classes * cnt) for cls, cnt in counts.items()}
+    print("Class weights:", class_weight)
+
     history = model.fit(
         train_ds,
         validation_data=val_ds,
         epochs=EPOCHS,
-        callbacks=callbacks
+        callbacks=callbacks,
+        class_weight=class_weight
     )
 
     # 7) Guardar label map (muy útil para finalproduct.py)
     with LABEL_MAP_OUT.open("w", encoding="utf-8") as f:
-        json.dump(
-            {"label_to_idx": label_to_idx, "idx_to_label": {str(k): v for k, v in idx_to_label.items()}},
-            f,
-            indent=2,
-            ensure_ascii=False
-        )
+        json.dump({"label_to_idx": label_to_idx, "idx_to_label": idx_to_label}, f, indent=2, ensure_ascii=False)
 
-    print("\n=== ENTRENAMIENTO COMPLETADO ===")
-    print(f"Modelo guardado en: {MODEL_OUT.resolve()}")
-    print(f"Mapa de etiquetas guardado en: {LABEL_MAP_OUT.resolve()}")
+    print(f"\n Modelo guardado en: {MODEL_OUT}")
+    print(f"Label map guardado en: {LABEL_MAP_OUT}")
 
 
 if __name__ == "__main__":

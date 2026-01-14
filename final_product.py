@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import json
@@ -16,131 +15,108 @@ TEST_TXT = Path("test.txt")
 MODEL_PATH = Path("modelo_frutas.keras")
 LABEL_MAP_PATH = Path("label_map.json")
 
-OUT_LABELS = Path("etiquetas_estimadas.txt")
-OUT_CM = Path("matriz_confusion.txt")
-
-IMG_SIZE = (160, 160)
+IMG_SIZE = (224, 224)
 BATCH_SIZE = 32
 AUTOTUNE = tf.data.AUTOTUNE
 
+OUT_PRED = Path("etiquetas_estimadas.txt")
+OUT_CM = Path("matriz_confusion.txt")
 
-# ============================
-# Utilidades
-# ============================
-def read_txt_list(txt_path: Path):
-    """
-    Lee un fichero tipo:
-        ruta etiqueta
-    """
+
+def read_list(txt_path: Path):
     paths, labels = [], []
-
     with txt_path.open("r", encoding="utf-8") as f:
-        for i, line in enumerate(f, start=1):
+        for line in f:
             line = line.strip()
             if not line:
                 continue
             parts = line.split()
-            if len(parts) != 2:
-                raise ValueError(
-                    f"Línea {i} en {txt_path} no tiene formato 'ruta etiqueta':\n{line}"
-                )
-            p, lab = parts
-            paths.append(p)
-            labels.append(lab)
-
+            if len(parts) < 2:
+                continue
+            paths.append(parts[0])
+            labels.append(parts[1])
     return paths, labels
 
 
-def load_label_map(path: Path):
-    data = json.loads(path.read_text(encoding="utf-8"))
-
-    label_to_idx = data["label_to_idx"]
-    idx_to_label = {int(k): v for k, v in data["idx_to_label"].items()}
-
-    class_names = [idx_to_label[i] for i in sorted(idx_to_label.keys())]
-    return label_to_idx, idx_to_label, class_names
-
-
-def decode_and_resize(path):
-    img_bytes = tf.io.read_file(path)
-    img = tf.image.decode_image(img_bytes, channels=3, expand_animations=False)
-    img = tf.image.convert_image_dtype(img, tf.float32)  # [0,1]
+def decode_img(img_bytes):
+    img = tf.io.decode_jpeg(img_bytes, channels=3)
     img = tf.image.resize(img, IMG_SIZE)
+    img = tf.cast(img, tf.float32) / 255.0
     return img
 
 
-def make_dataset(paths):
-    ds = tf.data.Dataset.from_tensor_slices(paths)
-    ds = ds.map(decode_and_resize, num_parallel_calls=AUTOTUNE)
+def load_example(path, label_idx):
+    img_bytes = tf.io.read_file(path)
+    img = decode_img(img_bytes)
+    return img, label_idx
+
+
+def make_dataset(paths, label_idxs):
+    ds = tf.data.Dataset.from_tensor_slices((paths, label_idxs))
+    ds = ds.map(load_example, num_parallel_calls=AUTOTUNE)
     ds = ds.batch(BATCH_SIZE).prefetch(AUTOTUNE)
     return ds
 
 
-def format_confusion_matrix(cm, class_names):
-    name_w = max(len(n) for n in class_names + ["real\\pred"])
-    cell_w = max(5, max(len(str(int(x))) for x in cm.flatten()))
-
-    header = " " * (name_w + 1) + " ".join(n.rjust(cell_w) for n in class_names)
-    lines = [header]
-
-    for i, name in enumerate(class_names):
-        row = " ".join(str(int(cm[i, j])).rjust(cell_w) for j in range(len(class_names)))
-        lines.append(name.ljust(name_w) + " " + row)
-
-    return "\n".join(lines)
-
-
-# ============================
-# Main
-# ============================
 def main():
-    # 1) Cargar modelo
+    if not MODEL_PATH.exists():
+        raise RuntimeError(f"No existe el modelo: {MODEL_PATH}")
+    if not LABEL_MAP_PATH.exists():
+        raise RuntimeError(f"No existe el label map: {LABEL_MAP_PATH}")
+    if not TEST_TXT.exists():
+        raise RuntimeError(f"No existe el fichero de test: {TEST_TXT}")
+
+    # 1) Cargar label_map
+    with LABEL_MAP_PATH.open("r", encoding="utf-8") as f:
+        label_map = json.load(f)
+    label_to_idx = label_map["label_to_idx"]
+    idx_to_label = {int(k): v for k, v in label_map["idx_to_label"].items()}
+
+    # 2) Leer test
+    test_paths, test_labels = read_list(TEST_TXT)
+    y_true = np.array([label_to_idx[l] for l in test_labels], dtype=np.int32)
+
+    # 3) Dataset
+    test_ds = make_dataset(test_paths, y_true)
+
+    # 4) Cargar modelo
     model = tf.keras.models.load_model(MODEL_PATH)
 
-    # 2) Cargar mapa de etiquetas
-    label_to_idx, idx_to_label, class_names = load_label_map(LABEL_MAP_PATH)
-
-    # 3) Leer test.txt
-    test_paths, test_labels_str = read_txt_list(TEST_TXT)
-
-    y_true = np.array([label_to_idx[l] for l in test_labels_str], dtype=np.int32)
-
-    # 4) Dataset y predicción
-    ds = make_dataset(test_paths)
-    probs = model.predict(ds, verbose=1)
+    # 5) Predicciones
+    probs = model.predict(test_ds, verbose=1)
     y_pred = np.argmax(probs, axis=1).astype(np.int32)
 
-    # 5) Guardar etiquetas_estimadas.txt
-    with OUT_LABELS.open("w", encoding="utf-8") as f:
-        f.write("ruta etiqueta_real etiqueta_predicha\n")
-        for p, yt, yp in zip(test_paths, y_true, y_pred):
-            f.write(f"{p} {idx_to_label[int(yt)]} {idx_to_label[int(yp)]}\n")
+    # 6) Accuracy
+    acc = float(np.mean(y_pred == y_true))
+    print(f"\n Accuracy test: {acc:.4f}")
 
-    # 6) Matriz de confusión (FORMA COMPATIBLE)
-    cm = tf.math.confusion_matrix(
-        labels=y_true,
-        predictions=y_pred,
-        num_classes=len(class_names)
-    ).numpy()
+    # 7) Matriz de confusión (a mano, sin sklearn)
+    num_classes = len(idx_to_label)
+    cm = np.zeros((num_classes, num_classes), dtype=np.int32)
+    for t, p in zip(y_true, y_pred):
+        cm[t, p] += 1
 
-    accuracy = float(np.mean(y_true == y_pred))
+    # 8) Guardar predicciones (ruta, label_real, label_pred)
+    with OUT_PRED.open("w", encoding="utf-8") as f:
+        for path, t, p in zip(test_paths, y_true, y_pred):
+            f.write(f"{path} {idx_to_label[int(t)]} {idx_to_label[int(p)]}\n")
+    print(f" Etiquetas estimadas guardadas en: {OUT_PRED}")
 
-    # 7) Guardar matriz_confusion.txt
+    # 9) Guardar matriz de confusión
     with OUT_CM.open("w", encoding="utf-8") as f:
-        f.write("=== MATRIZ DE CONFUSION ===\n")
-        f.write("(filas = real, columnas = predicha)\n\n")
-        f.write(format_confusion_matrix(cm, class_names))
-        f.write("\n\nAccuracy global: {:.4f}\n\n".format(accuracy))
+        f.write("Clases (idx -> label):\n")
+        for i in range(num_classes):
+            f.write(f"  {i}: {idx_to_label[i]}\n")
+        f.write("\nMatriz de confusión (filas=real, cols=pred):\n")
+        f.write(np.array2string(cm))
+        f.write(f"\n\nAccuracy: {acc:.4f}\n")
+    print(f" Matriz de confusión guardada en: {OUT_CM}")
 
-        support = Counter(y_true.tolist())
-        f.write("Soporte por clase:\n")
-        for i, name in enumerate(class_names):
-            f.write(f"- {name}: {support.get(i, 0)}\n")
-
-    print("\n=== FINALPRODUCT COMPLETADO ===")
-    print(f"Etiquetas: {OUT_LABELS.resolve()}")
-    print(f"Matriz de confusión: {OUT_CM.resolve()}")
-    print(f"Accuracy global: {accuracy:.4f}")
+    # (Opcional) distribución de predicciones por curiosidad
+    pred_counts = Counter(y_pred.tolist())
+    print("\nDistribución de predicciones:")
+    for k in sorted(pred_counts.keys()):
+        print(f"  {k} ({idx_to_label[k]}): {pred_counts[k]}")
 
 
 if __name__ == "__main__":

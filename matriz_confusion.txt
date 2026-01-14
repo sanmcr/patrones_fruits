@@ -1,20 +1,17 @@
-=== MATRIZ DE CONFUSION ===
-(filas = real, columnas = predicha)
+Clases (idx -> label):
+  0: fresh_peaches_done
+  1: fresh_pomegranates_done
+  2: fresh_strawberries_done
+  3: rotten_peaches_done
+  4: rotten_pomegranates_done
+  5: rotten_strawberries_done
 
-                         fresh_peaches_done fresh_pomegranates_done fresh_strawberries_done rotten_peaches_done rotten_pomegranates_done rotten_strawberries_done
-fresh_peaches_done          16     0     0     8     1     0
-fresh_pomegranates_done      2    23     0     5     1     0
-fresh_strawberries_done      0     0    15     0     0    10
-rotten_peaches_done          2     0     0    25     6     2
-rotten_pomegranates_done     2     1     0     5    15     2
-rotten_strawberries_done     0     0     1     0     1    23
+Matriz de confusión (filas=real, cols=pred):
+[[23  1  1  0  0  0]
+ [ 2 24  1  3  1  0]
+ [ 0  0 21  0  0  4]
+ [ 3  0  0 22  8  2]
+ [ 1  0  0  4 19  1]
+ [ 0  0  1  0  2 22]]
 
-Accuracy global: 0.7048
-
-Soporte por clase:
-- fresh_peaches_done: 25
-- fresh_pomegranates_done: 31
-- fresh_strawberries_done: 25
-- rotten_peaches_done: 35
-- rotten_pomegranates_done: 25
-- rotten_strawberries_done: 25
+Accuracy: 0.7892
